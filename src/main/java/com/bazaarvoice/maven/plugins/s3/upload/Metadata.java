@@ -45,11 +45,9 @@ public class Metadata implements Serializable {
 	
 	public boolean shouldSetMetadata(String file){
 		if(matches != null && !matches.trim().isEmpty()){
-			if(file.matches(matches)){
-				return true;
-			}
-			return false;
+      return file.matches(matches);
 		}
+		
 		return true;
 	}
 

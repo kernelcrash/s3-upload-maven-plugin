@@ -4,8 +4,14 @@ import java.io.File;
 import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -73,12 +79,18 @@ public class S3UploadMojo extends AbstractMojo {
 	@Parameter(property = "s3-upload.metadatas")
 	private LinkedList<Metadata> metadatas;
 
+	@Parameter(property = "s3-upload.pool")
+	private Integer executorPoolSize = 10;
+
+	private ExecutorService executorService;
+
 	@Override
 	public void execute() throws MojoExecutionException {
 		if (skip) {
 			getLog().info("Skipping S3UPload");
 			return;
 		}
+
 		File sourceFile = new File(source);
 		if (!sourceFile.exists()) {
 			throw new MojoExecutionException("File/folder doesn't exist: " + source);
@@ -98,9 +110,21 @@ public class S3UploadMojo extends AbstractMojo {
 
 			return;
 		}
-		
-		boolean success = upload(s3, sourceFile);
-		if (!success) {
+
+		executorService = Executors.newFixedThreadPool(executorPoolSize);
+
+    boolean success = upload(s3, sourceFile);
+
+    executorService.shutdown();
+    // now wait for them to finish
+    try {
+      executorService.awaitTermination(1, TimeUnit.DAYS);
+    } catch (InterruptedException e) {
+      getLog().error(e);
+      success = false;
+    }
+
+    if (!success) {
 			throw new MojoExecutionException("Unable to upload file to S3.");
 		}
 
@@ -168,14 +192,20 @@ public class S3UploadMojo extends AbstractMojo {
 			throw new MojoExecutionException("Error getting file canonicalPath when updating permissions",ioe);
 		}
 	}
-	private void updatePermissions(AmazonS3 s3, String key) {
-		getLog().debug("Updating permissions for key: "+key);
-		AccessControlList acl = s3.getObjectAcl(bucketName, key);
-		for(Permission p :permissions){
-			acl.grantPermission(p.getAsGrantee(), p.getPermission());
-		}
-		s3.setObjectAcl(bucketName, key, acl);
+	private void updatePermissions(final AmazonS3 s3, final String key) {
+    getLog().info("submitting updating permissions for key: "+key);
+	  executorService.submit(new Runnable() {
+      @Override
+      public void run() {
+        getLog().info("Updating permissions for key: "+key);
+        AccessControlList acl = s3.getObjectAcl(bucketName, key);
+        for(Permission p :permissions){
+          acl.grantPermission(p.getAsGrantee(), p.getPermission());
+        }
+        s3.setObjectAcl(bucketName, key, acl);
 //		getLog().info("Updating permissions for '"+key+"' in bucket '"+bucketName);
+      }
+    });
 	}
 
 	private void updateMetadatas(AmazonS3 s3, File sourceFile, String localPrefix, String keyPrefix, Integer folderLevel) throws MojoExecutionException {
@@ -194,14 +224,28 @@ public class S3UploadMojo extends AbstractMojo {
 		}
 	}
 
-	private void updateMetadatas(AmazonS3 s3, String key) throws MojoExecutionException {
-		getLog().debug("Updating Metadata for key: "+key);
-		S3Object s3o = s3.getObject(bucketName, key);
-		for (Metadata m: metadatas) {
-			if(m.shouldSetMetadata(key)){
-				s3o.getObjectMetadata().setHeader(m.getKey(), m.getValue());
-			}
-		}
-		s3.putObject(bucketName, key, s3o.getObjectContent(), s3o.getObjectMetadata());
+	private void updateMetadatas(final AmazonS3 s3, final String key) throws MojoExecutionException {
+    getLog().info("submitting updating Metadata for key: " + key);
+	  executorService.submit(new Runnable() {
+      @Override
+      public void run() {
+        List<String> keys = new ArrayList<>();
+        for (Metadata m: metadatas) {
+          if(m.shouldSetMetadata(key)){
+            keys.add(String.format("%s=%s", m.getKey(), m.getValue()));
+          }
+        }
+
+        getLog().info("Updating Metadata for key: " + key + " (" + keys.stream().collect(Collectors.joining(",")) + ")");
+
+        S3Object s3o = s3.getObject(bucketName, key);
+        for (Metadata m: metadatas) {
+          if(m.shouldSetMetadata(key)){
+            s3o.getObjectMetadata().setHeader(m.getKey(), m.getValue());
+          }
+        }
+        s3.putObject(bucketName, key, s3o.getObjectContent(), s3o.getObjectMetadata());
+      }
+    });
 	}
 }
