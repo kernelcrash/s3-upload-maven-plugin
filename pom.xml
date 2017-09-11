@@ -1,5 +1,4 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 
 	<parent>
@@ -10,7 +9,7 @@
 
 	<groupId>com.bluetrainsoftware.maven.plugins</groupId>
 	<artifactId>s3-upload-maven-plugin</artifactId>
-	<version>1.5-SNAPSHOT</version>
+	<version>1.5</version>
 	<packaging>maven-plugin</packaging>
 
 	<name>S3 upload maven plugin</name>
@@ -19,7 +18,8 @@
 		<url>https://github.com/rvowles/s3-upload-maven-plugin</url>
 		<connection>scm:git:git@github.com:rvowles/s3-upload-maven-plugin.git</connection>
 		<developerConnection>scm:git:git@github.com:rvowles/s3-upload-maven-plugin.git</developerConnection>
-	</scm>
+	  <tag>s3-upload-maven-plugin-1.5</tag>
+  </scm>
 
 	<properties>
 		<maven.version>3.3.9</maven.version>
