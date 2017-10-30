@@ -96,6 +96,10 @@ public class S3UploadMojo extends AbstractMojo {
 			throw new MojoExecutionException("File/folder doesn't exist: " + source);
 		}
 
+		if ("/".equals(destination)) {
+			destination = "";
+		}
+
 		AmazonS3 s3 = getS3Client(accessKey, secretKey);
 		if (endpoint != null) {
 			s3.setEndpoint(endpoint);
@@ -155,7 +159,7 @@ public class S3UploadMojo extends AbstractMojo {
 			throw new MojoExecutionException("File is neither a regular file nor a directory " + sourceFile);
 		}
 		try {
-			getLog().debug("Transferring " + transfer.getProgress().getTotalBytesToTransfer() + " bytes...");
+			getLog().info("Transferring " + sourceFile.getAbsolutePath() + " : " + transfer.getProgress().getTotalBytesToTransfer() + " bytes...");
 			transfer.waitForCompletion();
 			getLog().info("Transferred " + transfer.getProgress().getBytesTransfered() + " bytes.");
 
