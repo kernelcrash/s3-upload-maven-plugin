@@ -2,10 +2,7 @@ package com.bazaarvoice.maven.plugins.s3.upload;
 
 import java.io.File;
 import java.io.IOException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -13,6 +10,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import com.amazonaws.services.s3.model.CannedAccessControlList;
+import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
@@ -46,6 +45,9 @@ public class S3UploadMojo extends AbstractMojo {
 	 */
 	@Parameter(property = "s3-upload.doNotUpload", defaultValue = "false")
 	private boolean doNotUpload;
+
+	@Parameter(property = "s3-upload.publicRead", defaultValue = "false")
+	private Boolean publicRead = Boolean.FALSE;
 
 	/**
 	 * Skips execution
@@ -86,10 +88,10 @@ public class S3UploadMojo extends AbstractMojo {
 
 	@Override
 	public void execute() throws MojoExecutionException {
-		if (skip) {
-			getLog().info("Skipping S3UPload");
-			return;
-		}
+//		if (skip) {
+//			getLog().info("Skipping S3UPload");
+//			return;
+//		}
 
 		File sourceFile = new File(source);
 		if (!sourceFile.exists()) {
@@ -148,10 +150,13 @@ public class S3UploadMojo extends AbstractMojo {
 	}
 
 	private boolean upload(AmazonS3 s3, File sourceFile) throws MojoExecutionException {
-		TransferManager mgr = new TransferManager(s3);
+		TransferManager mgr = TransferManagerBuilder.standard().withS3Client(s3).build();
 
-		Transfer transfer;
-		if (sourceFile.isFile()) {
+		Transfer transfer = null;
+		if (skip) {
+			getLog().info("skipping upload.");
+		}
+		else if (sourceFile.isFile()) {
 			transfer = mgr.upload(bucketName, destination, sourceFile);
 		} else if (sourceFile.isDirectory()) {
 			transfer = mgr.uploadDirectory(bucketName, destination, sourceFile, recursive);
@@ -159,9 +164,11 @@ public class S3UploadMojo extends AbstractMojo {
 			throw new MojoExecutionException("File is neither a regular file nor a directory " + sourceFile);
 		}
 		try {
-			getLog().info("Transferring " + sourceFile.getAbsolutePath() + " : " + transfer.getProgress().getTotalBytesToTransfer() + " bytes...");
-			transfer.waitForCompletion();
-			getLog().info("Transferred " + transfer.getProgress().getBytesTransfered() + " bytes.");
+			if (transfer != null) {
+				getLog().info("Transferring " + sourceFile.getAbsolutePath() + " : " + transfer.getProgress().getTotalBytesToTransfer() + " bytes...");
+				transfer.waitForCompletion();
+				getLog().info("Transferred " + transfer.getProgress().getBytesTransfered() + " bytes.");
+			}
 
 			try {
 				if(metadatas != null && metadatas.size() > 0){
@@ -169,6 +176,9 @@ public class S3UploadMojo extends AbstractMojo {
 				}
 				if(permissions != null && permissions.size() > 0){
 					updatePermissions(s3,sourceFile,sourceFile.getCanonicalPath(),destination, 0);
+				}
+				if (publicRead) {
+					updatePublicRead(s3,sourceFile,sourceFile.getCanonicalPath(),destination, 0);
 				}
 			} catch (IOException e) {
 				throw new MojoExecutionException("Error getting file canonicalPath when updating permissions/metadatas",e);
@@ -178,6 +188,34 @@ public class S3UploadMojo extends AbstractMojo {
 		}
 
 		return true;
+	}
+
+	private void updatePublicRead(AmazonS3 s3, File sourceFile, String localPrefix, String keyPrefix, int folderLevel) throws MojoExecutionException {
+		try{
+			if (sourceFile.isFile()) {
+				updatePublicRead(s3, sourceFile.getCanonicalPath().replace(localPrefix, keyPrefix));
+			} else {
+				//this will allow first level folder, but not following
+				if(recursive || folderLevel <= 0){
+					for(File f:sourceFile.listFiles()){
+						updatePublicRead(s3, f, f.getCanonicalPath(), keyPrefix.replaceAll("([^"+File.separatorChar+"])"+File.separatorChar+"*$","$1"+File.separatorChar)+f.getName(), folderLevel + 1);
+					}
+				}
+			}
+		} catch(IOException ioe){
+			throw new MojoExecutionException("Error getting file canonicalPath when updating permissions",ioe);
+		}
+	}
+
+	private void updatePublicRead(final AmazonS3 s3, final String key) {
+		getLog().info("submitting updating public-read for key: "+key);
+		executorService.submit(new Runnable() {
+			@Override
+			public void run() {
+				getLog().info("Updating public-read permissions for key: "+key);
+				s3.setObjectAcl(bucketName, key, CannedAccessControlList.PublicRead);
+			}
+		});
 	}
 
 	private void updatePermissions(AmazonS3 s3, File sourceFile, String localPrefix, String keyPrefix, Integer folderLevel) throws MojoExecutionException {
