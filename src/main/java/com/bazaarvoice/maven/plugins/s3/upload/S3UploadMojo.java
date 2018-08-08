@@ -88,10 +88,10 @@ public class S3UploadMojo extends AbstractMojo {
 
 	@Override
 	public void execute() throws MojoExecutionException {
-//		if (skip) {
-//			getLog().info("Skipping S3UPload");
-//			return;
-//		}
+		if (skip) {
+			getLog().info("Skipping S3UPload");
+			return;
+		}
 
 		File sourceFile = new File(source);
 		if (!sourceFile.exists()) {
