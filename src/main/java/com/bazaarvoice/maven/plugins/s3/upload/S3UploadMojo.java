@@ -1,8 +1,11 @@
 package com.bazaarvoice.maven.plugins.s3.upload;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -11,7 +14,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import com.amazonaws.services.s3.model.CannedAccessControlList;
+import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
+import com.amazonaws.util.IOUtils;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
@@ -75,6 +80,9 @@ public class S3UploadMojo extends AbstractMojo {
 	@Parameter(property = "s3-upload.recursive", defaultValue = "false")
 	private boolean recursive;
 
+	@Parameter(property = "s3-only-new", defaultValue = "true")
+	private boolean onlyUploadNew;
+
 	@Parameter(property = "s3-upload.permissions")
 	private LinkedList<Permission> permissions;
 
@@ -83,6 +91,9 @@ public class S3UploadMojo extends AbstractMojo {
 
 	@Parameter(property = "s3-upload.pool")
 	private Integer executorPoolSize = 10;
+
+	private boolean uploadingSuccessful = true; // by default
+	private int copyingFileCount = 0;
 
 	private ExecutorService executorService;
 
@@ -117,6 +128,14 @@ public class S3UploadMojo extends AbstractMojo {
 			return;
 		}
 
+		if (onlyUploadNew) {
+			sourceFile = discoverExistingFilenames(s3, sourceFile);
+			if (copyingFileCount == 0) {
+				getLog().info("no files to upload");
+				return;
+			}
+		}
+
 		executorService = Executors.newFixedThreadPool(executorPoolSize);
 
     boolean success = upload(s3, sourceFile);
@@ -130,11 +149,78 @@ public class S3UploadMojo extends AbstractMojo {
       success = false;
     }
 
-    if (!success) {
+    if (!success && uploadingSuccessful) {
 			throw new MojoExecutionException("Unable to upload file to S3.");
 		}
 
 		getLog().info(String.format("File %s uploaded to s3://%s/%s", sourceFile, bucketName, destination));
+	}
+
+	private File discoverExistingFilenames(AmazonS3 s3, File sourceFile) throws MojoExecutionException {
+		List<String> existingFilenames = new ArrayList<>();
+
+		boolean incomplete = true;
+		ObjectListing bucketObjects = s3.listObjects(bucketName, destination);
+		while (incomplete) {
+
+			bucketObjects.getObjectSummaries().forEach((os) -> {
+				existingFilenames.add(os.getKey());
+				getLog().info(String.format("Existing key: %s", bucketName, os.getKey()));
+			});
+			if (bucketObjects.isTruncated()) {
+				bucketObjects = s3.listNextBatchOfObjects(bucketObjects);
+			} else {
+				incomplete = false;
+			}
+		}
+
+		if (existingFilenames.size() == 0) {
+			return sourceFile;
+		}
+
+		File target = new File("target/s3-filter");
+
+		target.mkdirs();
+
+		recursiveCopyNewFiles(sourceFile, target, existingFilenames, sourceFile.getPath());
+
+		return target;
+	}
+
+	private int recursiveCopyNewFiles(File sourceFile, File target, List<String> existingFilenames, String topPath) throws MojoExecutionException {
+		int count = 0;
+
+		for(File f : sourceFile.listFiles()) {
+			if (f.getName().equals("..") || f.getName().equals(".")) {
+
+			} else if (f.isDirectory()) {
+				File newTarget = new File(target, f.getName());
+				newTarget.mkdirs();
+				int copiedCount = recursiveCopyNewFiles(f, newTarget, existingFilenames, topPath);
+				if (copiedCount == 0) { // if no files were copied under this folder, delete it
+					newTarget.delete();
+				}
+				count += copiedCount;
+			} else {
+				String relativePath = f.getPath().substring(topPath.length()+1);
+				if (existingFilenames.contains(destination + '/' + relativePath)) {
+					getLog().info(String.format("skipping %s/%s as exists", destination, relativePath));
+				} else {
+					File newTarget = new File(target, f.getName());
+					copyingFileCount ++;
+					count ++;
+					getLog().info(String.format("copying %s as new", relativePath));
+					try {
+						IOUtils.copy(new FileInputStream(f), new FileOutputStream(newTarget));
+					} catch (IOException e) {
+						getLog().error("Unexpected failure in copy.");
+						throw new MojoExecutionException("Unexpected failure copying file", e);
+					}
+				}
+			}
+		}
+
+		return count;
 	}
 
 	private static AmazonS3 getS3Client(String accessKey, String secretKey) {
@@ -213,7 +299,12 @@ public class S3UploadMojo extends AbstractMojo {
 			@Override
 			public void run() {
 				getLog().info("Updating public-read permissions for key: "+key);
-				s3.setObjectAcl(bucketName, key, CannedAccessControlList.PublicRead);
+				try {
+					s3.setObjectAcl(bucketName, key, CannedAccessControlList.PublicRead);
+				} catch (Exception ex) {
+					getLog().error("Cannot set permission", ex);
+					uploadingSuccessful = false;
+				}
 			}
 		});
 	}
@@ -244,8 +335,12 @@ public class S3UploadMojo extends AbstractMojo {
         for(Permission p :permissions){
           acl.grantPermission(p.getAsGrantee(), p.getPermission());
         }
-        s3.setObjectAcl(bucketName, key, acl);
-//		getLog().info("Updating permissions for '"+key+"' in bucket '"+bucketName);
+        try {
+	        s3.setObjectAcl(bucketName, key, acl);
+        } catch (Exception ex) {
+        	getLog().error("Failed to update permissions", ex);
+        	uploadingSuccessful = false;
+        }
       }
     });
 	}
@@ -280,13 +375,18 @@ public class S3UploadMojo extends AbstractMojo {
 
         getLog().info("Updating Metadata for key: " + key + " (" + keys.stream().collect(Collectors.joining(",")) + ")");
 
-        S3Object s3o = s3.getObject(bucketName, key);
-        for (Metadata m: metadatas) {
-          if(m.shouldSetMetadata(key)){
-            s3o.getObjectMetadata().setHeader(m.getKey(), m.getValue());
-          }
+        try {
+	        S3Object s3o = s3.getObject(bucketName, key);
+	        for (Metadata m: metadatas) {
+		        if(m.shouldSetMetadata(key)){
+			        s3o.getObjectMetadata().setHeader(m.getKey(), m.getValue());
+		        }
+	        }
+	        s3.putObject(bucketName, key, s3o.getObjectContent(), s3o.getObjectMetadata());
+        } catch (Exception ex) {
+        	getLog().error("Failed to set metadata", ex);
+        	uploadingSuccessful = false;
         }
-        s3.putObject(bucketName, key, s3o.getObjectContent(), s3o.getObjectMetadata());
       }
     });
 	}
