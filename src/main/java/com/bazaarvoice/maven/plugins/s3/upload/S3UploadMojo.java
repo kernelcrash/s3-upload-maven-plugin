@@ -13,8 +13,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import com.amazonaws.services.s3.model.CannedAccessControlList;
-import com.amazonaws.services.s3.model.ObjectListing;
+import com.amazonaws.services.s3.model.*;
 import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
 import com.amazonaws.util.IOUtils;
 import org.apache.maven.plugin.AbstractMojo;
@@ -29,8 +28,6 @@ import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.internal.StaticCredentialsProvider;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3Client;
-import com.amazonaws.services.s3.model.AccessControlList;
-import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.transfer.Transfer;
 import com.amazonaws.services.s3.transfer.TransferManager;
 
@@ -300,7 +297,10 @@ public class S3UploadMojo extends AbstractMojo {
 			public void run() {
 				getLog().info("Updating public-read permissions for key: "+key);
 				try {
-					s3.setObjectAcl(bucketName, key, CannedAccessControlList.PublicRead);
+					AccessControlList acl = new AccessControlList();
+					acl = s3.getObjectAcl(bucketName, key);
+					acl.grantPermission(GroupGrantee.AllUsers, com.amazonaws.services.s3.model.Permission.Read);
+					s3.setObjectAcl(bucketName, key, acl);
 				} catch (Exception ex) {
 					getLog().error("Cannot set permission", ex);
 					uploadingSuccessful = false;
