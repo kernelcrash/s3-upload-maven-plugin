@@ -290,6 +290,18 @@ public class S3UploadMojo extends AbstractMojo {
 		}
 	}
 
+	private boolean isS3ObjectPublic(AccessControlList acl) {
+		List<Grant> grants = acl.getGrantsAsList();
+        	for (Grant grant : grants) {
+			if (grant.getGrantee().getIdentifier().contains("AllUsers") && (grant.getPermission().toString().equals("READ"))) {
+            			//System.out.format(">  %s: %s\n", grant.getGrantee().getIdentifier(), grant.getPermission().toString());
+				return true;
+			}
+        	}
+		return false;
+
+	}
+
 	private void updatePublicRead(final AmazonS3 s3, final String key) {
 		getLog().info("submitting updating public-read for key: "+key);
 		executorService.submit(new Runnable() {
@@ -297,10 +309,25 @@ public class S3UploadMojo extends AbstractMojo {
 			public void run() {
 				getLog().info("Updating public-read permissions for key: "+key);
 				try {
-					AccessControlList acl = new AccessControlList();
-					acl = s3.getObjectAcl(bucketName, key);
-					acl.grantPermission(GroupGrantee.AllUsers, com.amazonaws.services.s3.model.Permission.Read);
-					s3.setObjectAcl(bucketName, key, acl);
+					int count = 0;
+					int maxTries = 10;
+					while(true) {
+						if (count>1) {
+							getLog().info("Reattempt " + (count-1) + " setting public-read for "+key); 
+						}
+						AccessControlList acl = new AccessControlList();
+						acl = s3.getObjectAcl(bucketName, key);
+						if (!isS3ObjectPublic(acl)) {
+							acl.grantPermission(GroupGrantee.AllUsers, com.amazonaws.services.s3.model.Permission.Read);
+							s3.setObjectAcl(bucketName, key, acl);
+						} else {
+							break;
+						}
+						if (++count == maxTries) {
+							 throw new MojoExecutionException("Exhausted attempts to set public-read for " + key);
+						}
+        				}
+
 				} catch (Exception ex) {
 					getLog().error("Cannot set permission", ex);
 					uploadingSuccessful = false;
